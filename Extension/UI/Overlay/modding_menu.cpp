@@ -44,8 +44,11 @@ void draw_installed_mods(SkateMenu& menu) {
     }
     const auto& launch = mods::catalog();
     const auto applied = live_mods::applied_mods();
+    // A Board Break deck pack is in effect when one of the decks inside it is (mod_catalog.h).
     const auto in_effect = [&](const std::string& name) {
-        return std::ranges::any_of(applied, [&](const std::string& other) { return _stricmp(other.c_str(), name.c_str()) == 0; });
+        return std::ranges::any_of(applied, [&](const std::string& other) {
+            return _stricmp(other.c_str(), name.c_str()) == 0 || _stricmp(mods::board_break_pack_of(other).c_str(), name.c_str()) == 0;
+        });
     };
     const auto excluded = [&](const std::string& name) {
         return std::ranges::any_of(launch.excluded, [&](const mods::Mod& mod) { return _stricmp(mod.name.c_str(), name.c_str()) == 0; });
@@ -66,7 +69,8 @@ void draw_installed_mods(SkateMenu& menu) {
     // Mods still in effect whose folder has been deleted: applying unloads them.
     std::vector<std::string> removed;
     for (const auto& name : applied)
-        if (std::ranges::none_of(list.entries, [&](const mods::ModEntry& entry) { return _stricmp(entry.mod.name.c_str(), name.c_str()) == 0; }))
+        if (mods::board_break_pack_of(name).empty() &&
+            std::ranges::none_of(list.entries, [&](const mods::ModEntry& entry) { return _stricmp(entry.mod.name.c_str(), name.c_str()) == 0; }))
             removed.push_back(name);
     pending += removed.size();
     loaded += removed.size();

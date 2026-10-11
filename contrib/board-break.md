@@ -4,7 +4,7 @@ A hard slam can break the local skater's board: at the nose, in the middle or at
 time the grip tape holds the pieces together and the board folds or an end hangs; otherwise a piece
 comes off, flies and lies where it lands, truck and wheels with it. The board is whole again once
 the skater has picked it up, rides again or respawns. Built into ReSkate; the broken pieces
-themselves come from content mods, one for each deck shape.
+themselves come from a content mod with the deck shapes in it.
 
 Code: [board_break.cpp](../Extension/BoardBreak/board_break.cpp) (client tick and the boards'
 render pose hook), [board_break_model.h](../Extension/BoardBreak/board_break_model.h) (the rules and
@@ -73,10 +73,22 @@ deck's place in the mod list in [mod_catalog.cpp](../Engine/Vfs/mod_catalog.cpp)
 
 ## The deck packs
 
-A content mod (no code) in a folder named `Board_Break_<Name>`; the name is what the deck goes by.
-The eight the feature was made with are standard, wide, concave, powell, slim, egg, square and
-shaped, and the console also knows those by number. Any other pack that follows the recipe works,
-with no change to ReSkate:
+A deck is a content mod's copy of the deck model (no code), and comes in one of two ways:
+
+- a mod folder named `Board_Break_<Name>` holds the deck `<name>`;
+- a deck pack, a mod folder of any name, holds a deck in each `decks/<name>/`, laid out like a mod
+  folder (`layout.toc`, `Win32/...`). The launcher installs one mod folder per package, so this is
+  how one package brings every deck. When the mods are put together each deck inside becomes a mod
+  of its own for the run, listed as `<folder>#<name>`: it is chosen, set aside and switched like a
+  deck in a folder of its own (its archives are placed like a disabled mod's). mods.json and the
+  mod list only know the pack, which counts as loaded when one of its decks is. The launcher takes
+  a folder for a mod only when it has a `layout.toc` of its own: a pack that keeps the game's own
+  deck there changes nothing for a ReSkate without Board Break, and with it that layout is set
+  aside like any other deck model.
+
+The name is what the deck goes by. The eight the feature was made with are standard, wide,
+concave, powell, slim, egg, square and shaped, and the console also knows those by number. Any
+other deck that follows the recipe works, with no change to ReSkate:
 
 - Start from the deck mesh as ReSkate Studio exports it (three parts on the bone Deck: the grip
   sheet, the wood, and a plain copy of the whole deck). Studio only takes back a mesh whose
@@ -89,11 +101,12 @@ with no change to ReSkate:
   deck's own edge faces standing in the gap as the broken end. Push the row itself along the board
   by a jagged line, the same line for both sides of a break, so the pieces fit together.
 - Build the stretches at their own size, in the place they have in the whole deck.
-- The standard deck's pack also carries `sounds/light|medium|heavy/*.wav`.
+- The sounds are `sounds/light|medium|heavy/*.wav` in the folder of any mod that brings a deck.
 
 ## Seen working in game
 
-Offline, on main at f4292d6, with eight deck packs installed: breaks from real slams at the nose,
+Offline, on main at f4292d6, with eight decks installed, each in a folder of its own and all of
+them in one deck pack: breaks from real slams at the nose,
 in the middle and at the tail, clean and held by the grip, the board whole again in hand and on
 respawn; breaks from the console on foot (folded, nose and tail hanging) that stay until mended.
 The grip side of a whole board, close up in the board menu, shows no cracks. A deck chosen while
@@ -101,7 +114,9 @@ the game runs is the one in the board menu and in the world after the level has 
 (about 20 s), and the one the next launch starts with. With a wide-deck mod switched on and first
 in the order, the breakable deck is still the one in the game and the mod is set aside; so is an
 older deck mod of Board Break's own. The mod list shows the decks that are set aside as such, with
-nothing waiting to be applied. The switch on the overlay's Skater page turns it off and on. On the
+nothing waiting to be applied. With the pack first in the order, the deck the game starts with and
+the deck chosen while it runs both come from inside the pack, and the pack's own layout (the
+game's deck) is set aside. The switch on the overlay's Skater page turns it off and on. On the
 older build the feature was developed on, a middle break played back in the replay editor.
 
 ## Not tried yet
