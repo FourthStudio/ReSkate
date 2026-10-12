@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ReSkate Mesh Compiler</title>
+<style>/*STYLE*/</style>
+</head>
+<body>
+<div class="app">
+  <aside class="nav">
+    <div class="logo"><span class="logo-word">ReSkate</span><span class="logo-sub">STUDIO</span></div>
+    <nav aria-label="Pages">
+      <button class="nav-item active" data-page="compiler">COMPILER</button>
+      <button class="nav-item" data-page="help">HOW IT WORKS</button>
+      <button class="nav-item" data-page="settings">SETTINGS</button>
+    </nav>
+    <div class="nav-foot">Files stay on your device.<br>Nothing is uploaded.</div>
+  </aside>
+
+  <main class="main">
+    <header class="top">
+      <h1 id="pageTitle">MESH COMPILER</h1>
+      <div class="top-actions">
+        <button class="btn" id="exportFbxTop" disabled>Export .fbx</button>
+        <button class="btn primary" id="compileTop" disabled>Compile</button>
+      </div>
+    </header>
+
+    <section class="page" id="page-compiler">
+      <div class="tabs" role="tablist" aria-label="Steps">
+        <button role="tab" data-step="import" aria-selected="true"><span class="step-n">1</span>IMPORT COSMETIC</button>
+        <button role="tab" data-step="model" aria-selected="false"><span class="step-n">2</span>NEW MODEL</button>
+        <button role="tab" data-step="textures" aria-selected="false"><span class="step-n">3</span>TEXTURES</button>
+        <button role="tab" data-step="compile" aria-selected="false"><span class="step-n">4</span>COMPILE &amp; EXPORT</button>
+      </div>
+      <div class="work">
+        <div class="side">
+          <div class="side-tools" id="sideTools"></div>
+          <div class="side-list" id="sideList" role="listbox"></div>
+          <div class="side-count" id="sideCount"></div>
+        </div>
+        <div class="stage">
+          <div class="stage-head">
+            <div class="stage-title" id="stageTitle">No cosmetic loaded</div>
+            <div class="stage-sub" id="stageSub">Import a folder exported from ReSkate Studio to begin</div>
+          </div>
+          <div class="vp-bar">
+            <button class="btn" id="fit" title="Frame everything (F)">Fit (F)</button>
+            <div class="seg" id="gizmoModes" aria-label="Handle">
+              <button class="btn" data-mode="translate" title="Move (W)">Move</button>
+              <button class="btn" data-mode="rotate" title="Rotate (E)">Rotate</button>
+              <button class="btn" data-mode="scale" title="Scale (R)">Scale</button>
+            </div>
+            <span class="vp-stats" id="vpStats"></span>
+            <span class="vp-spacer"></span>
+            <label class="check"><input type="checkbox" id="showOriginal" checked><span>Original</span></label>
+            <label class="check"><input type="checkbox" id="showParts" checked><span>New</span></label>
+            <label class="check"><input type="checkbox" id="showCompiled" checked><span>Compiled</span></label>
+            <label class="check"><input type="checkbox" id="showBones" checked><span>Bones</span></label>
+            <label class="check"><input type="checkbox" id="showWeights"><span>Weights</span></label>
+          </div>
+          <div class="viewport" id="viewport">
+            <div class="drop-hint" id="dropHint" hidden><div>Drop to import</div></div>
+            <div class="empty" id="empty">
+              <div class="empty-title">Start with a cosmetic</div>
+              <p>Export the cosmetic from ReSkate Studio, then import that folder here. Its mesh, bones and textures are read for you.</p>
+              <button class="btn primary big" id="emptyImport">Import Studio export folder…</button>
+              <p class="small">or drop the folder anywhere on this window</p>
+            </div>
+            <div class="toast" id="toast" role="status" aria-live="polite"></div>
+          </div>
+          <div class="splitter" id="splitter" title="Drag to resize"></div>
+          <div class="panel" id="panel"></div>
+          <div class="bottom-row">
+            <input id="outputName" class="input grow" placeholder="Output name" spellcheck="false" aria-label="Output name">
+            <button class="btn primary" id="nextStep">Next step</button>
+          </div>
+          <div class="hint-line" id="hintLine">Import a cosmetic to begin.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="page doc" id="page-help" hidden></section>
+    <section class="page doc" id="page-settings" hidden></section>
+
+    <footer class="status-bar">
+      <span id="statusLeft">READY</span>
+      <span id="statusRight">NO COSMETIC LOADED</span>
+    </footer>
+  </main>
+</div>
+
+<input type="file" id="pickFolder" webkitdirectory multiple hidden>
+<input type="file" id="pickFbx" accept=".fbx" hidden>
+<input type="file" id="pickModel" accept=".fbx,.obj,.glb,.gltf" hidden>
+<input type="file" id="pickImage" accept="image/png,image/jpeg,image/webp,image/bmp,.tga,.dds" hidden>
+<input type="file" id="pickModelTextures" webkitdirectory multiple hidden>
+<script>/*SCRIPT*/</script>
+</body>
+</html>

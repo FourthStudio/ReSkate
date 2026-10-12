@@ -1,0 +1,15 @@
+{
+  "name": "reskate-mesh-compiler",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Swap a ReSkate Studio cosmetic's mesh for a new model, keeping the original bones, and export an FBX Studio can import.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10",
+    "three": "0.185.1"
+  }
+}

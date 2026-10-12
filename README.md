@@ -144,6 +144,11 @@ accepts `park random` from its console or an admin.
 Only install mods you trust. Mods change game data. Custom Lua scripts (`scripts/Custom`) are
 switched off in this version: nothing in that folder is read or run.
 
+To replace a cosmetic's mesh with your own model (shoes, tops, pants, hair, costumes, decks), open
+[`MeshCompiler/ReSkate_Mesh_Compiler.html`](MeshCompiler/README.md) in a browser. It takes a cosmetic
+exported from ReSkate Studio, puts your model on the cosmetic's own bones, and exports an FBX (and
+textures) for Studio.
+
 ## Dedicated servers
 
 `ReSkateServer.exe` is a headless lobby that needs neither the game nor Steam installed. It is in the

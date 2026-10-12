@@ -28,3 +28,6 @@ analysis/raw/**/*.res
 /analysis/
 /docs/
 /release
+
+# Mesh Compiler build tooling
+/MeshCompiler/node_modules/
