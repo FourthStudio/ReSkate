@@ -5,6 +5,8 @@ import { buildScene, detectMirrorPlane, slotPieces } from './fbx/scene.js';
 import { autoPlan, compile } from './fbx/compile.js';
 import { meanDistance } from './mesh/transfer.js';
 import { centre, extractPiece, loadModel, MODEL_EXT } from './mesh/newmodel.js';
+import { simplifyPart } from './mesh/simplify.js';
+import { atlasLayout, drawAtlas, flipGreen, materialAreas, uvTransform } from './atlas.js';
 import { autoAlign, fitToPiece, mirrorMatrix } from './mesh/align.js';
 import { makeMaterial, originalWeightColours, Viewport } from './viewport.js';
 import * as tex from './textures.js';
@@ -59,7 +61,9 @@ const state = {
     collapsed: new Set(['bones']),
     undo: [],
     pose: { boneId: null, angle: 30, axis: 'x', animate: false },
+    combine: true,
 };
+let dataSeq = 0;
 let partSeq = 0;
 let texSeq = 0;
 
@@ -307,23 +311,69 @@ async function loadTextures(entries) {
 
 async function importModel(entry) {
     if (!MODEL_EXT.test(entry.file.name)) throw new Error('Use an FBX, OBJ or GLB model.');
-    const { part, textures } = await loadModel(entry.file);
-    centre(part);
+    const { part: full, textures } = await loadModel(entry.file);
+    centre(full);
+    full.uid = ++dataSeq;
+    const names = full.materialNames;
     for (const t of textures) {
         const canvas = document.createElement('canvas');
         canvas.width = t.image.width;
         canvas.height = t.image.height;
         canvas.getContext('2d').drawImage(t.image, 0, 0);
-        state.modelTextures.push({ id: 'm' + ++texSeq, name: t.name, type: t.type, canvas, thumb: tex.thumbnail(canvas) });
+        state.modelTextures.push({ id: 'm' + ++texSeq, name: t.name, type: t.type, material: t.material ?? (names.length === 1 ? names[0] : null), canvas, thumb: tex.thumbnail(canvas) });
     }
-    for (const name of part.materialNames) if (!state.materialMap.has(name)) state.materialMap.set(name, defaultOriginalMaterial());
-    const p = addPart(part, part.name);
+    for (const name of names) if (!state.materialMap.has(name)) state.materialMap.set(name, defaultOriginalMaterial());
+    // Models made for film or renders are far heavier than a game cosmetic:
+    // bring them down to a sensible budget straight away.
+    const fullTris = full.index.length / 3;
+    const budget = recommendedBudget();
+    let data = full;
+    if (fullTris > Math.max(30000, budget * 2.5)) data = await detailed(full, budget);
+    const p = addPart(data, full.name);
     if (state.original) autoPlace(p, currentTarget());
     selectPart(p);
     autoAssignModelTextures();
     vp.fit();
-    const extra = part.generatedUv ? ' It had no UVs, so simple box UVs were made.' : '';
-    say(`${entry.file.name}: ${(part.index.length / 3).toLocaleString()} triangles.${state.original ? ' Placed on ' + (currentTarget()?.label ?? 'the cosmetic') + '.' : ''}${extra}`);
+    const tris = data.index.length / 3;
+    const parts = [`${entry.file.name}: ${fullTris.toLocaleString()} triangles`];
+    if (tris < fullTris) parts.push(`simplified to ${tris.toLocaleString()} for the game (change it under Detail)`);
+    if (state.original) parts.push('placed on ' + (currentTarget()?.label ?? 'the cosmetic'));
+    if (full.generatedUv) parts.push('it had no UVs, so simple box UVs were made');
+    say(parts.join(', ') + '.');
+}
+
+// Triangles per piece: twice the original's, between 8k and 20k.
+function recommendedBudget() {
+    const o = state.original;
+    if (!o) return 20000;
+    const lod = Math.min(...o.targets.map(t => t.slot.lod));
+    const pieces = o.targets.filter(t => t.slot.lod === lod);
+    const tris = pieces.reduce((n, t) => n + t.piece.tris.length, 0) / Math.max(pieces.length, 1);
+    return Math.min(20000, Math.max(8000, Math.round((tris * 2) / 1000) * 1000));
+}
+
+async function detailed(full, target) {
+    if (!target || target >= full.index.length / 3) return full;
+    const data = await simplifyPart(full, target);
+    data.full = full;
+    data.uid = ++dataSeq;
+    data.detail = target;
+    return data;
+}
+
+// Re-simplifies (from full detail) every part that shares p's model.
+async function setDetail(p, target) {
+    const old = p.data;
+    const full = old.full ?? old;
+    const data = await detailed(full, target);
+    for (const q of state.parts.filter(x => x.data === old)) {
+        q.data = data;
+        q.object.geometry.dispose();
+        q.object.geometry = vp.partGeometry(data);
+    }
+    markDirty();
+    refresh();
+    say(`${p.name}: ${(data.index.length / 3).toLocaleString()} triangles.`);
 }
 
 function defaultOriginalMaterial() {
@@ -337,6 +387,7 @@ function defaultOriginalMaterial() {
 function addPart(data, name, matrix) {
     const object = vp.addPart(data, n => materialFor(partMaterials, n));
     if (matrix) matrix.decompose(object.position, object.quaternion, object.scale);
+    data.uid ??= ++dataSeq;
     const p = { id: 'p' + ++partSeq, name, data, object };
     object.userData.partId = p.id;
     state.parts.push(p);
@@ -378,7 +429,9 @@ function autoPlace(p, target) {
     if (!p || !target) return;
     const mirrored = p.object.matrix.determinant() < 0;
     p.object.updateMatrix();
-    setMatrix(p, autoAlign(p.data, target.slot, target.piece, mirrored));
+    const { upAxis, upSign } = state.original.scene;
+    const up = new Vector3().setComponent(upAxis, upSign || 1);
+    setMatrix(p, autoAlign(p.data, target.slot, target.piece, mirrored, up));
 }
 
 function pushUndo() {
@@ -448,9 +501,19 @@ function textureOf(canvas, colour) {
 
 // The image a texture slot will hold in the export.
 function outputCanvas(t) {
+    const base = baseOutput(t);
+    if (!t.flipGreen || t.type.key !== 'normal' || !base || base.unsupported) return base;
+    if (t._flipSrc !== base) {
+        t._flipSrc = base;
+        t._flipped = flipGreen(base);
+    }
+    return t._flipped;
+}
+
+function baseOutput(t) {
     const c = t.choice;
-    const w = t.canvas?.width || 512;
-    const hgt = t.canvas?.height || 512;
+    const w = t.canvas?.width || 1024;
+    const hgt = t.canvas?.height || 1024;
     if (c.mode === 'image' && c.canvas) return c.canvas;
     if (c.mode === 'model') return state.modelTextures.find(m => m.id === c.id)?.canvas ?? t.canvas;
     if (c.mode === 'flat') {
@@ -460,7 +523,53 @@ function outputCanvas(t) {
         }
         return c.canvas;
     }
+    if (c.mode === 'atlas') {
+        const group = atlasGroups().get(t.material ?? defaultOriginalMaterial());
+        if (!group) return t.canvas;
+        const entries = group.names.map(name => {
+            const src = modelTexture(name, c.type);
+            return { rect: group.layout.get(name), source: src?.canvas ?? null, id: src?.id ?? '', fill: tex.neutralColour(c.type, '#9a9a9a') };
+        });
+        const key = JSON.stringify([w, hgt, entries.map(e => [e.rect, e.id, e.fill])]);
+        if (c.key !== key) {
+            c.key = key;
+            c.canvas = drawAtlas(w, hgt, entries);
+        }
+        return c.canvas;
+    }
     return t.canvas;
+}
+
+function modelTexture(material, type) {
+    return state.modelTextures.find(x => x.type === type && x.material === material) ?? null;
+}
+
+// New-model materials that share one original material, and where each goes
+// in its texture. Only groups of two or more need combining.
+let atlasMemo = { key: '', groups: new Map() };
+function atlasGroups() {
+    if (!state.combine) return new Map();
+    const datas = [...new Set(state.parts.map(p => p.data))];
+    const key = datas.map(d => d.uid).join(',') + '|' + JSON.stringify([...state.materialMap]);
+    if (atlasMemo.key === key) return atlasMemo.groups;
+    const areas = new Map();
+    for (const d of datas) materialAreas(d, 1, areas);
+    const byOriginal = new Map();
+    for (const [name, area] of areas) {
+        const orig = state.materialMap.get(name) ?? defaultOriginalMaterial();
+        if (!byOriginal.has(orig)) byOriginal.set(orig, new Map());
+        byOriginal.get(orig).set(name, area);
+    }
+    const groups = new Map();
+    for (const [orig, list] of byOriginal) if (list.size >= 2) groups.set(orig, { names: [...list.keys()], layout: atlasLayout(list) });
+    atlasMemo = { key, groups };
+    return groups;
+}
+
+function uvTransforms() {
+    const out = new Map();
+    for (const g of atlasGroups().values()) for (const [name, rect] of g.layout) out.set(name, uvTransform(rect));
+    return out;
 }
 
 function texturesFor(materialName, type, output) {
@@ -491,14 +600,16 @@ function refreshPreviewTextures() {
     };
     for (const [name, m] of originalMaterials) set(m, texturesFor(name, 'basecolor', false), texturesFor(name, 'normal', false));
     for (const [name, m] of compiledMaterials) set(m, texturesFor(name, 'basecolor', true), texturesFor(name, 'normal', true));
-    // New parts show what their textures will be: a replaced output texture
-    // of the original material they map to, else their own embedded texture.
+    // New parts keep their own UVs, so they show their own textures; an image
+    // or flat colour put in the cosmetic's slot is shown instead.
+    const single = new Set(state.parts.flatMap(p => p.data.materialNames)).size === 1;
     for (const [name, m] of partMaterials) {
         const orig = state.materialMap.get(name) ?? '';
-        const own = type => state.modelTextures.find(x => x.type === type && x.name.startsWith(name + ' ·'))?.canvas ?? state.modelTextures.find(x => x.type === type)?.canvas ?? null;
         const pick = type => {
-            const t = state.textures.find(x => x.type.key === type && (x.material === orig || !x.material) && x.choice.mode !== 'keep');
-            return t ? outputCanvas(t) : own(type);
+            const t = state.textures.find(x => x.type.key === type && (x.material === orig || !x.material) && (x.choice.mode === 'image' || x.choice.mode === 'flat'));
+            if (t) return outputCanvas(t);
+            const own = modelTexture(name, type) ?? (single ? state.modelTextures.find(x => x.type === type) : null);
+            return own?.canvas ?? null;
         };
         set(m, pick('basecolor'), pick('normal'));
     }
@@ -506,9 +617,20 @@ function refreshPreviewTextures() {
 
 function autoAssignModelTextures() {
     let n = 0;
+    const groups = atlasGroups();
+    const newNames = [...new Set(state.parts.flatMap(p => p.data.materialNames))];
     for (const t of state.textures) {
         if (t.choice.mode !== 'keep' || ['pattern', 'graphic', 'mask', 'other'].includes(t.type.key)) continue;
-        const m = state.modelTextures.find(x => x.type === t.type.key);
+        const orig = t.material ?? defaultOriginalMaterial();
+        const group = groups.get(orig);
+        if (group && group.names.some(name => modelTexture(name, t.type.key))) {
+            t.choice = { mode: 'atlas', type: t.type.key };
+            n++;
+            continue;
+        }
+        const mapped = newNames.filter(name => (state.materialMap.get(name) ?? orig) === orig);
+        const m = mapped.map(name => modelTexture(name, t.type.key)).find(Boolean)
+            ?? (newNames.length <= 1 ? state.modelTextures.find(x => x.type === t.type.key) : null);
         if (m) {
             t.choice = { mode: 'model', id: m.id };
             n++;
@@ -525,7 +647,8 @@ async function importModelTextures(entries) {
         try {
             const canvas = await tex.decodeImage(e.file);
             if (canvas.unsupported) continue;
-            state.modelTextures.push({ id: 'm' + ++texSeq, name: e.file.name, type: tex.textureType(e.file.name).key, canvas, thumb: tex.thumbnail(canvas) });
+            const names = [...new Set(state.parts.flatMap(p => p.data.materialNames))];
+            state.modelTextures.push({ id: 'm' + ++texSeq, name: e.file.name, type: tex.textureType(e.file.name).key, material: tex.matchMaterial(e.file.name, names), canvas, thumb: tex.thumbnail(canvas) });
         } catch {
             /* skipped */
         }
@@ -603,6 +726,7 @@ function runCompile() {
             maxInfluences: Number(state.settings.maxInfluences) || 0,
             smooth: Number(state.settings.smooth) || 0,
             materialMap: state.materialMap,
+            uvTransforms: uvTransforms(),
         });
     } catch (e) {
         fail(e);
@@ -664,7 +788,7 @@ async function exportZip() {
         let changed = 0;
         for (const t of state.textures) {
             const rel = t.entry.rel ?? t.name;
-            if (t.choice.mode === 'keep' || !t.canvas || t.canvas.unsupported) {
+            if ((t.choice.mode === 'keep' && !t.flipGreen) || !t.canvas || t.canvas.unsupported) {
                 files[`${base}/${rel}`] = new Uint8Array(await t.entry.file.arrayBuffer());
             } else {
                 const out = tex.resized(outputCanvas(t), t.canvas.width, t.canvas.height);
@@ -1003,6 +1127,19 @@ function panelModel(panel) {
         panel.append(h('div', { class: 'form-row' }, h('span', { class: 'lbl' }, 'Uniform scale'), h('div', { class: 'slider-row grow' }, h('span', { class: 'mono' }, '½×'), uni, h('span', { class: 'mono' }, '2×'))));
         renderTransform();
     }
+    if (p) {
+        const full = p.data.full ?? p.data;
+        const fullTris = full.index.length / 3;
+        const now = p.data.index.length / 3;
+        const budget = recommendedBudget();
+        const levels = [...new Set([0, budget, Math.round(budget / 2), budget * 2, 40000, 60000, p.data.detail ?? 0].filter(n => n === 0 || n < fullTris))].sort((a, b) => (a === 0) - (b === 0) || a - b);
+        const detail = h('select', { class: 'input', 'aria-label': 'Detail' }, levels.map(n => h('option', { value: String(n), selected: n === 0 ? now === fullTris : p.data.detail === n },
+            n === 0 ? `Full detail (${fullTris.toLocaleString()})` : `${n.toLocaleString()} triangles${n === budget ? ' (recommended)' : ''}`)));
+        detail.addEventListener('change', () => busy('Simplifying…', () => setDetail(p, Number(detail.value))));
+        panel.append(h('div', { class: 'section' }, 'Detail'));
+        panel.append(h('div', { class: 'form-row' }, h('span', { class: 'lbl' }, 'Triangles'), detail,
+            h('span', { class: 'dim', style: 'font-size:13px' }, `Now ${now.toLocaleString()}. The original has about ${Math.round(budget / 2).toLocaleString()} per piece; game meshes need to stay light.`)));
+    }
     if (state.original && state.parts.length) {
         panel.append(h('div', { class: 'section' }, 'Materials'));
         const names = [...new Set(state.original.scene.slots.flatMap(s => s.materials.map(m => m.name)))];
@@ -1070,16 +1207,57 @@ function panelTextures(panel) {
         panel.append(h('div', { class: 'callout' }, state.original ? 'The export folder had no texture images. You can still compile and export the mesh.' : 'Import a cosmetic first.'));
         return;
     }
+    const groups = atlasGroups();
+    const anyGroup = [...groups.values()][0];
+    const newNames = [...new Set(state.parts.flatMap(p => p.data.materialNames))];
+    if (anyGroup || (!state.combine && newNames.length > 1)) {
+        const on = h('input', { type: 'checkbox', checked: state.combine });
+        on.addEventListener('change', () => {
+            state.combine = on.checked;
+            for (const t of state.textures) if (t.choice.mode === 'atlas' && !state.combine) t.choice = { mode: 'keep' };
+            if (state.combine) autoAssignModelTextures();
+            markDirty();
+            refreshPreviewTextures();
+            refresh();
+        });
+        const box = h('div', { class: 'callout atlas' });
+        box.append(h('label', { class: 'check' }, on, h('span', {}, h('strong', {}, `Combine the new model's ${newNames.length} materials into one texture set`))));
+        if (anyGroup) {
+            const preview = drawAtlas(200, 200, anyGroup.names.map(name => ({ rect: anyGroup.layout.get(name), source: modelTexture(name, 'basecolor')?.canvas ?? null, fill: '#3a3f44' })));
+            const g = preview.getContext('2d');
+            g.font = 'bold 11px Arial';
+            g.textAlign = 'center';
+            for (const name of anyGroup.names) {
+                const r = anyGroup.layout.get(name);
+                g.strokeStyle = '#0091ff';
+                g.strokeRect(r.x * 200 + 0.5, (1 - r.y - r.h) * 200 + 0.5, r.w * 200 - 1, r.h * 200 - 1);
+                g.fillStyle = '#fff';
+                g.fillText(name, (r.x + r.w / 2) * 200, (1 - r.y - r.h / 2) * 200);
+            }
+            preview.className = 'atlas-preview';
+            const missing = anyGroup.names.filter(name => !modelTexture(name, 'basecolor'));
+            box.append(h('div', { class: 'atlas-row' }, preview, h('div', {},
+                h('p', {}, `The cosmetic has one texture set, so ${anyGroup.names.join(', ')} each get a part of it (bigger surfaces get more room). Their UVs are moved to match when you compile.`),
+                missing.length
+                    ? h('p', { class: 'status-warn' }, `No base colour found for ${missing.join(', ')}. Use Load new model textures… and pick the folder with files like ${missing[0].replace(/\s+/g, '_')}_Base_color.png.`)
+                    : h('p', { class: 'status-ok' }, 'Base colour found for every material.'))));
+        } else {
+            box.append(h('p', {}, 'Off: every material keeps its own UVs, so they overlap in the one texture set.'));
+        }
+        panel.append(box);
+    }
     const rows = visibleTextures().map(t => {
         const sourceSel = h('select', { class: 'input', 'aria-label': 'Source for ' + t.name },
             h('option', { value: 'keep', selected: t.choice.mode === 'keep' }, 'Original'),
             h('option', { value: 'flat', selected: t.choice.mode === 'flat' }, 'Flat colour'),
+            groups.get(t.material ?? defaultOriginalMaterial()) ? h('option', { value: 'atlas', selected: t.choice.mode === 'atlas' }, 'Combined new model') : null,
             t.choice.mode === 'image' ? h('option', { value: 'image', selected: true }, 'Image: ' + t.choice.name) : null,
             state.modelTextures.map(m => h('option', { value: 'model:' + m.id, selected: t.choice.mode === 'model' && t.choice.id === m.id }, 'New model: ' + m.name)));
         sourceSel.addEventListener('change', () => {
             const v = sourceSel.value;
             if (v === 'keep') t.choice = { mode: 'keep' };
             else if (v === 'flat') t.choice = { mode: 'flat', colour: tex.neutralColour(t.type.key, t.stats.average) };
+            else if (v === 'atlas') t.choice = { mode: 'atlas', type: t.type.key };
             else if (v.startsWith('model:')) t.choice = { mode: 'model', id: v.slice(6) };
             refreshPreviewTextures();
             refresh();
@@ -1090,16 +1268,21 @@ function panelTextures(panel) {
             refreshPreviewTextures();
         });
         colour.addEventListener('change', () => refresh());
-        const status = t.choice.mode === 'keep'
+        const status = t.choice.mode === 'keep' && !t.flipGreen
             ? h('span', { class: t.stats.detail > 0.02 ? 'status-warn' : 'dim', title: t.stats.detail > 0.02 ? 'Painted for the old mesh layout: replace it or make it flat' : 'One flat colour: fits any mesh' }, t.stats.detail > 0.02 ? 'Old layout' : 'Fits any mesh')
             : h('span', { class: 'status-ok' }, 'Replaced');
-        const thumbSrc = t.choice.mode === 'keep' ? t.thumb : tex.thumbnail(outputCanvas(t));
+        const thumbSrc = t.choice.mode === 'keep' && !t.flipGreen ? t.thumb : tex.thumbnail(outputCanvas(t));
         return h('tr', {},
             h('td', {}, h('span', { class: 'tname' }, h('img', { class: 'thumb', src: thumbSrc, alt: '' }), h('span', {}, t.type.label, h('span', { class: 'sub' }, t.name + (t.canvas ? ` · ${t.canvas.width}×${t.canvas.height}` : '') + (t.note ? ' · ' + t.note : ''))))),
             h('td', { class: 'dim' }, t.material ?? 'All'),
             h('td', {}, sourceSel),
             h('td', { class: 'nowrap' }, status),
             h('td', { class: 'actions' },
+                t.type.key === 'normal' ? h('label', { class: 'check small', title: 'Flip the green channel (OpenGL and DirectX normal maps differ). Turn on if bumps look inverted in game.' }, (() => {
+                    const cb = h('input', { type: 'checkbox', checked: !!t.flipGreen });
+                    cb.addEventListener('change', () => { t.flipGreen = cb.checked; refreshPreviewTextures(); refresh(); });
+                    return cb;
+                })(), h('span', {}, 'Flip G')) : null,
                 button('Replace…', () => { pendingImageFor = t; $('pickImage').click(); }, { small: true }),
                 colour,
                 button('Reset', () => { t.choice = { mode: 'keep' }; refreshPreviewTextures(); refresh(); }, { small: true, disabled: t.choice.mode === 'keep' })));
@@ -1272,11 +1455,13 @@ function renderHelp() {
 <li>The FBX is read with its bones and every mesh; the texture images are listed separately.</li></ol></div>
 <div class="card"><h3>2 · New model</h3><ol>
 <li>Press <b>Import new model…</b> (FBX, OBJ or GLB). It is turned, sized and placed on the selected target automatically, using the original's measurements.</li>
+<li>Models made for renders are often far too heavy for the game (hundreds of thousands of triangles). They are simplified automatically to about twice the original's detail; change it under <b>Detail</b>.</li>
 <li>Fine-tune with the handles (<kbd>W</kbd> move, <kbd>E</kbd> rotate, <kbd>R</kbd> scale) or type exact values. <b>Fit size</b> re-sizes without changing the rotation.</li>
 <li>For pairs, select the placed part and press <b>Duplicate &amp; mirror</b> (<kbd>M</kbd>): the copy lands on the other side, mirrored across the character's centre.</li>
 <li>If your model is several pieces (for example both shoes in one file), use <b>Split</b> and place each piece on its own target.</li></ol></div>
 <div class="card"><h3>3 · Textures</h3>
-<p>Textures are painted for a mesh's UV layout, so the original ones will look scrambled on a new model. For each texture choose <b>Replace…</b> (your own image), a texture that came with the new model, or a <b>Flat colour</b>. <b>Load new model textures…</b> takes a whole folder (for example a Substance export) and matches base colour, normal, roughness and so on by name. Replacements are written at the original size and format under the original names.</p></div>
+<p>Textures are painted for a mesh's UV layout, so the original ones will look scrambled on a new model. For each texture choose <b>Replace…</b> (your own image), a texture that came with the new model, or a <b>Flat colour</b>. <b>Load new model textures…</b> takes a whole folder (for example a Substance export with <i>Body_Base_color.png</i>, <i>Sole_Normal_OpenGL.png</i>, …) and matches each file to its material and type by name. Replacements are written at the original size and format under the original names.</p>
+<p>A cosmetic has one texture set, but a new model often has several materials (Body, Sole, Laces…). These are <b>combined</b> automatically: each material gets a part of the texture (bigger surfaces get more room) and its UVs are moved to match when you compile. If bumps look inverted in game, tick <b>Flip G</b> on the normal map (OpenGL and DirectX normal maps differ).</p></div>
 <div class="card"><h3>4 · Compile &amp; export</h3><ol>
 <li>Press <b>Compile</b>. Each new part goes into the original mesh it sits on (in every LOD). Each new vertex takes the bone weights of the closest point on the original surface, so it bends exactly like the original did there.</li>
 <li>Check it: turn on <b>Weights</b> to colour the mesh by bone, and use the <b>Bend test</b> to swing a bone.</li>
@@ -1474,7 +1659,7 @@ window.addEventListener('keydown', e => {
 });
 
 // Exposed for scripted use and testing.
-window.meshCompiler = { state, importOriginal, importModel, runCompile, duplicate, autoPlace, setStep, exportFbx, exportZip, viewport: vp, selectPart };
+window.meshCompiler = { state, importOriginal, importModel, runCompile, duplicate, autoPlace, setStep, setDetail, uvTransforms, exportFbx, exportZip, viewport: vp, selectPart };
 
 renderHelp();
 setStep('import');

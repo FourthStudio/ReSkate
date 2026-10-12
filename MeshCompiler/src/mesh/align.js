@@ -95,8 +95,10 @@ function score(grid, targetSamples, pts, m) {
 }
 
 // Returns the part's new local -> world matrix. `keepMirror` keeps a mirrored
-// part mirrored.
-export function autoAlign(part, slot, piece, keepMirror = false) {
+// part mirrored. `up` is the cosmetic's up direction: models are almost always
+// made standing up (+Y once loaded), so turning them over has to fit the
+// surface far better to win (a shoe's top and bottom can look alike).
+export function autoAlign(part, slot, piece, keepMirror = false, up = null) {
     const grid = pieceGrid(slot, piece);
     const pts = samples(part, 500);
     const target = new Box3(piece.min.clone(), piece.max.clone());
@@ -106,7 +108,8 @@ export function autoAlign(part, slot, piece, keepMirror = false) {
         const base = R.clone().multiply(mirror);
         const { scale, offset } = fitBox(boundsOf(pts, base), target);
         const m = new Matrix4().makeTranslation(offset.x, offset.y, offset.z).multiply(new Matrix4().makeScale(scale, scale, scale)).multiply(base);
-        const s = score(grid, piece._samples, pts, m);
+        const upright = !up || new Vector3(0, 1, 0).transformDirection(R).dot(up) > 0.99;
+        const s = score(grid, piece._samples, pts, m) * (upright ? 1 : 2);
         if (!best || s < best.s) best = { s, m };
     }
     return refine(best.m, grid, pts);

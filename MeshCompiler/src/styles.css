@@ -238,6 +238,11 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 15px; }
 .chip input { accent-color: var(--accent); margin: 0; }
 .slider-row { display: flex; align-items: center; gap: 10px; }
 .slider-row input[type=range] { flex: 1; max-width: 260px; }
+.atlas-row { display: flex; gap: 14px; align-items: flex-start; margin-top: 8px; }
+.atlas-row p { margin: 0 0 6px; }
+.atlas-preview { width: 120px; height: 120px; flex: none; border: 1px solid var(--line); image-rendering: auto; }
+.check.small { font-size: 12px; gap: 5px; margin-right: 6px; }
+.check.small input { width: 16px; height: 16px; }
 .mono { font-family: Consolas, "DejaVu Sans Mono", monospace; font-size: 13px; }
 
 /* ---- documents (help / settings) ---- */

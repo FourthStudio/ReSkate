@@ -251,3 +251,62 @@ test('Blender FBX: byte-identical round trip, and each new shoe only uses its ow
     }
     assert.deepEqual(out.bones.map(b => b.name), scene.bones.map(b => b.name));
 });
+
+test('simplify: hits the budget, keeps both materials and drops unused vertices', async () => {
+    const { simplifyPart } = await import('../src/mesh/simplify.js');
+    // A 100 x 100 grid bent into a bump, left half material 0, right half 1.
+    const n = 100;
+    const positions = [];
+    const normals = [];
+    const uv = [];
+    for (let y = 0; y <= n; y++) for (let x = 0; x <= n; x++) {
+        positions.push(x / n, y / n, Math.sin((x / n) * Math.PI) * Math.sin((y / n) * Math.PI) * 0.3);
+        normals.push(0, 0, 1);
+        uv.push(x / n, y / n);
+    }
+    const index = [];
+    const triMaterial = [];
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+        const a = y * (n + 1) + x;
+        index.push(a, a + 1, a + n + 2, a, a + n + 2, a + n + 1);
+        triMaterial.push(x < n / 2 ? 0 : 1, x < n / 2 ? 0 : 1);
+    }
+    const part = { name: 'grid', positions: Float32Array.from(positions), normals: Float32Array.from(normals), uvs: [Float32Array.from(uv), null], index: Uint32Array.from(index), triMaterial: Int32Array.from(triMaterial), materialNames: ['A', 'B'], pieces: [{ name: 'grid', vertexStart: 0, vertexCount: (n + 1) ** 2 }] };
+    const out = await simplifyPart(part, 2000);
+    const tris = out.index.length / 3;
+    assert.ok(tris <= 2200 && tris >= 1500, `got ${tris} triangles`);
+    assert.deepEqual([...new Set(out.triMaterial)].sort(), [0, 1]);
+    const used = new Set(out.index);
+    assert.equal(used.size, out.positions.length / 3);
+    assert.equal(out.uvs[0].length / 2, out.positions.length / 3);
+    assert.equal(out.pieces[0].vertexCount, out.positions.length / 3);
+});
+
+test('atlas: rectangles tile the texture without overlap, bigger surfaces get more room', async () => {
+    const { atlasLayout, uvTransform } = await import('../src/atlas.js');
+    const layout = atlasLayout(new Map([['Body', 40], ['Sole', 30], ['Laces', 5]]));
+    const rects = [...layout.values()];
+    const total = rects.reduce((s, r) => s + r.w * r.h, 0);
+    assert.ok(Math.abs(total - 1) < 1e-9);
+    for (let i = 0; i < rects.length; i++) for (let j = i + 1; j < rects.length; j++) {
+        const a = rects[i], b = rects[j];
+        const overlap = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+        assert.ok(overlap < 1e-12);
+    }
+    const area = n => layout.get(n).w * layout.get(n).h;
+    assert.ok(area('Body') > area('Sole') && area('Sole') > area('Laces'));
+    const t = uvTransform(layout.get('Laces'));
+    const r = layout.get('Laces');
+    assert.ok(t.ox >= r.x && t.ox + t.sx <= r.x + r.w && t.oy >= r.y && t.oy + t.sy <= r.y + r.h);
+});
+
+test('compile: combined materials get their UVs moved into their rectangle', () => {
+    const original = readFbx(writeFbx(makeSkinnedFbx()));
+    const scene = buildScene(original);
+    const part = boxPart([-0.6, 0, -0.3], [0.6, 0.5, 2.0]);
+    part.uvs = [new Float32Array(16).fill(1), null]; // every corner at (1, 1)
+    const uvTransforms = new Map([['Leather', { ox: 0.25, oy: 0.5, sx: 0.5, sy: 0.25 }]]);
+    const result = compile(original, scene, [part], autoPlan(scene, [part], meanDistance), { uvTransforms });
+    const uv = childArr(child(byId(readFbx(result.bytes), 3001), 'LayerElementUV'), 'UV');
+    assert.deepEqual(Array.from(uv), [0.75, 0.75]);
+});

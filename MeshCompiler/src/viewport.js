@@ -219,7 +219,7 @@ export class Viewport {
 
     // ---- new parts --------------------------------------------------------
 
-    addPart(part, materials) {
+    partGeometry(part) {
         const geo = new BufferGeometry();
         geo.setAttribute('position', new BufferAttribute(part.positions, 3));
         geo.setAttribute('normal', new BufferAttribute(part.normals, 3));
@@ -235,6 +235,11 @@ export class Viewport {
         }
         geo.computeBoundingBox();
         geo.computeBoundingSphere();
+        return geo;
+    }
+
+    addPart(part, materials) {
+        const geo = this.partGeometry(part);
         const mesh = new Mesh(geo, part.materialNames.map(n => materials(n)));
         mesh.name = part.name;
         this.partsGroup.add(mesh);

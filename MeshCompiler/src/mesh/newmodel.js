@@ -76,7 +76,6 @@ export function bake(root, name) {
         const ta = g.attributes.uv;
         const tb = g.attributes.uv1 ?? g.attributes.uv2;
         const base = positions.length / 3;
-        const triBase = index.length / 3;
         const nMat = new Matrix3().getNormalMatrix(o.matrixWorld);
         const skinned = o.isSkinnedMesh && o.skeleton && g.attributes.skinIndex;
         if (skinned) o.skeleton.update();
@@ -114,7 +113,7 @@ export function bake(root, name) {
                 const img = tex?.image;
                 if (!img || seenTex.has(tex) || !(img.width > 1)) continue;
                 seenTex.add(tex);
-                textures.push({ name: `${label} · ${slotLabel}`, type, image: img });
+                textures.push({ name: `${label} · ${slotLabel}`, type, material: label, image: img });
             }
             return k;
         });
@@ -137,7 +136,7 @@ export function bake(root, name) {
                 triMaterial.push(matIndex[grp.materialIndex ?? 0] ?? matIndex[0]);
             }
         }
-        pieces.push({ name: o.name || `Mesh ${pieces.length + 1}`, vertexStart: base, vertexCount: pos.count, triStart: triBase, triCount: index.length / 3 - triBase });
+        pieces.push({ name: o.name || `Mesh ${pieces.length + 1}`, vertexStart: base, vertexCount: pos.count });
     });
     if (!index.length) throw new Error('This model has no triangles.');
 
@@ -157,7 +156,55 @@ export function bake(root, name) {
         boxUv(part);
         part.generatedUv = true;
     }
-    return { part, textures };
+    return { part: weld(part), textures };
+}
+
+// Loaders often give every triangle its own three vertices. Share vertices
+// that match in position, normal and UVs so the mesh is connected again
+// (needed to simplify it, and much lighter to compile). Seams stay split.
+export function weld(part) {
+    const n = part.positions.length / 3;
+    const keys = new Map();
+    const remap = new Uint32Array(n);
+    const keep = [];
+    const q = x => Math.round(x * 1e5);
+    const [ua, ub] = part.uvs;
+    for (let i = 0; i < n; i++) {
+        const p = part.positions;
+        const nn = part.normals;
+        let key = `${p[i * 3]},${p[i * 3 + 1]},${p[i * 3 + 2]}|${q(nn[i * 3])},${q(nn[i * 3 + 1])},${q(nn[i * 3 + 2])}|${q(ua[i * 2])},${q(ua[i * 2 + 1])}`;
+        if (ub) key += `|${q(ub[i * 2])},${q(ub[i * 2 + 1])}`;
+        let at = keys.get(key);
+        if (at === undefined) {
+            at = keep.length;
+            keys.set(key, at);
+            keep.push(i);
+        }
+        remap[i] = at;
+    }
+    if (keep.length === n) return part;
+    const take = (src, size) => {
+        if (!src) return null;
+        const dst = new Float32Array(keep.length * size);
+        keep.forEach((i, k) => dst.set(src.subarray(i * size, i * size + size), k * size));
+        return dst;
+    };
+    // Source pieces were contiguous; welding keeps first-seen order, so they
+    // still are.
+    const pieces = part.pieces.map(pc => {
+        const first = remap[pc.vertexStart];
+        let last = first;
+        for (let v = pc.vertexStart; v < pc.vertexStart + pc.vertexCount; v++) last = Math.max(last, remap[v]);
+        return { ...pc, vertexStart: first, vertexCount: last - first + 1 };
+    });
+    return {
+        ...part,
+        positions: take(part.positions, 3),
+        normals: take(part.normals, 3),
+        uvs: [take(ua, 2), take(ub, 2)],
+        index: Uint32Array.from(part.index, i => remap[i]),
+        pieces,
+    };
 }
 
 function fillNormals(part) {
@@ -191,20 +238,26 @@ function boxUv(part) {
     }
 }
 
-// A copy of one source mesh of a part, as its own part.
+// A copy of one source mesh of a part (a vertex range), as its own part.
 export function extractPiece(part, piece) {
-    const { vertexStart: vs, vertexCount: vc, triStart: ts, triCount: tc } = piece;
-    const index = new Uint32Array(tc * 3);
-    for (let i = 0; i < tc * 3; i++) index[i] = part.index[ts * 3 + i] - vs;
+    const { vertexStart: vs, vertexCount: vc } = piece;
+    const index = [];
+    const triMaterial = [];
+    for (let t = 0; t < part.index.length / 3; t++) {
+        const a = part.index[t * 3];
+        if (a < vs || a >= vs + vc) continue;
+        index.push(a - vs, part.index[t * 3 + 1] - vs, part.index[t * 3 + 2] - vs);
+        triMaterial.push(part.triMaterial[t]);
+    }
     return {
         ...part,
         name: piece.name,
         positions: part.positions.slice(vs * 3, (vs + vc) * 3),
         normals: part.normals.slice(vs * 3, (vs + vc) * 3),
         uvs: part.uvs.map(u => (u ? u.slice(vs * 2, (vs + vc) * 2) : null)),
-        index,
-        triMaterial: part.triMaterial.slice(ts, ts + tc),
-        pieces: [{ ...piece, vertexStart: 0, triStart: 0 }],
+        index: Uint32Array.from(index),
+        triMaterial: Int32Array.from(triMaterial),
+        pieces: [{ name: piece.name, vertexStart: 0, vertexCount: vc }],
     };
 }
 

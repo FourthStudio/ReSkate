@@ -156,13 +156,18 @@ export function buildSlotMesh(slot, parts, options = {}) {
             const corner = flip ? [part.index[t], part.index[t + 2], part.index[t + 1]] : [part.index[t], part.index[t + 1], part.index[t + 2]];
             const a = remap[corner[0]], b = remap[corner[1]], c = remap[corner[2]];
             if (a === b || b === c || a === c) continue;
+            // Materials packed into a shared texture get their UVs moved into
+            // their own rectangle of it.
+            const fit = options.uvTransforms?.get(part.materialNames[part.triMaterial?.[t / 3] ?? 0]);
+            const pu = u => (fit ? fit.ox + u * fit.sx : u);
+            const pv = v => (fit ? fit.oy + v * fit.sy : v);
             for (const vi of corner) {
                 tris.push(remap[vi]);
                 if (part.normals) nrm.fromArray(part.normals, vi * 3).applyMatrix3(nMat).normalize();
                 else nrm.set(0, 1, 0);
                 normals.push(nrm.x, nrm.y, nrm.z);
-                uv0.push(uvA ? uvA[vi * 2] : 0, uvA ? uvA[vi * 2 + 1] : 0);
-                uv1.push(uvB ? uvB[vi * 2] : uvA ? uvA[vi * 2] : 0, uvB ? uvB[vi * 2 + 1] : uvA ? uvA[vi * 2 + 1] : 0);
+                uv0.push(pu(uvA ? uvA[vi * 2] : 0), pv(uvA ? uvA[vi * 2 + 1] : 0));
+                uv1.push(pu(uvB ? uvB[vi * 2] : uvA ? uvA[vi * 2] : 0), pv(uvB ? uvB[vi * 2 + 1] : uvA ? uvA[vi * 2 + 1] : 0));
             }
             triMat.push(matIndex[part.triMaterial?.[t / 3] ?? 0] ?? 0);
         }
